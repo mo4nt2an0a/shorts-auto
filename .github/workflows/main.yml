@@ -11,6 +11,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Test Gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -21,10 +26,4 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python scripts/analyze_video.py \
-            "input/VID_20260921_015943_064.mp4"
-
-      - name: Show clips found
-        run: |
-          echo "===== CLIPS FOUND ====="
-          cat clips.json
+          python scripts/analyze_video
