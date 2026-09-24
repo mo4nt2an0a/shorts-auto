@@ -36,3 +36,10 @@ jobs:
         run: |
           echo "===== GENERATED SHORTS ====="
           ls -lh output/
+
+      - name: Upload Shorts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-shorts
+          path: output/
+          if-no-files-found: error
