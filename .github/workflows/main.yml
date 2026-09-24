@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  analyze:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,3 +16,15 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python scripts/test_gemini.py
+
+      - name: Analyze source video
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python scripts/analyze_video.py \
+            "input/VID_20260921_015943_064.mp4"
+
+      - name: Show clips found
+        run: |
+          echo "===== CLIPS FOUND ====="
+          cat clips.json
