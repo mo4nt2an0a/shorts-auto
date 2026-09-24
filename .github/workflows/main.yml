@@ -11,69 +11,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Test Gemini API
+      - name: Test Gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python - <<'PY'
-          import os
-          import json
-          import urllib.request
-          import urllib.error
-
-          key = os.environ["GEMINI_API_KEY"]
-
-          url = (
-              "https://generativelanguage.googleapis.com/"
-              "v1beta/models/gemini-3.5-flash-lite:generateContent?key="
-              + key
-          )
-
-          payload = {
-              "contents": [
-                  {
-                      "parts": [
-                          {
-                              "text": "Reply with exactly: GEMINI_OK"
-                          }
-                      ]
-                  }
-              ]
-          }
-
-          data = json.dumps(payload).encode("utf-8")
-
-          req = urllib.request.Request(
-              url,
-              data=data,
-              headers={"Content-Type": "application/json"},
-              method="POST"
-          )
-
-          try:
-              response = urllib.request.urlopen(req)
-              result = json.loads(response.read().decode())
-
-              print(json.dumps(result, indent=2))
-
-              text = (
-                  result["candidates"][0]
-                  ["content"]["parts"][0]["text"]
-                  .strip()
-              )
-
-              print("Gemini response:", text)
-
-              if text != "GEMINI_OK":
-                  raise RuntimeError(
-                      f"Unexpected Gemini response: {text}"
-                  )
-
-              print("GEMINI TEST PASSED")
-
-          except urllib.error.HTTPError as e:
-              print("HTTP STATUS:", e.code)
-              print("GOOGLE RESPONSE:")
-              print(e.read().decode())
-              raise
-          PY
+          python scripts/test_gemini.py
