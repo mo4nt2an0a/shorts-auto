@@ -19,7 +19,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install faster-whisper google-genai google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+          pip install faster-whisper google-genai google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib requests
 
       - name: Download source video from Google Drive
         env:
@@ -28,14 +28,19 @@ jobs:
           python - <<'PY'
           import os
           import json
-          import io
+          import time
+          from pathlib import Path
+
+          import requests
           from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
           from googleapiclient.discovery import build
-          from googleapiclient.http import MediaIoBaseDownload
 
           SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-          info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+          info = json.loads(
+              os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+          )
 
           credentials = service_account.Credentials.from_service_account_info(
               info,
@@ -61,7 +66,9 @@ jobs:
           folder_list = folders.get("files", [])
 
           if not folder_list:
-              raise RuntimeError("ERROR: shorts-input folder was not found.")
+              raise RuntimeError(
+                  "ERROR: shorts-input folder was not found."
+              )
 
           input_folder = folder_list[0]
 
@@ -85,45 +92,173 @@ jobs:
 
               if mime_type.startswith("video/"):
                   video_files.append(file)
-              elif name.endswith((".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")):
+              elif name.endswith(
+                  (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
+              ):
                   video_files.append(file)
 
           if not video_files:
-              raise RuntimeError("ERROR: No video files found inside shorts-input.")
+              raise RuntimeError(
+                  "ERROR: No video files found inside shorts-input."
+              )
 
           source = video_files[0]
 
+          file_id = source["id"]
+          file_name = source["name"]
+
           print("Selected video:")
-          print(f"Name: {source['name']}")
-          print(f"ID: {source['id']}")
+          print(f"Name: {file_name}")
+          print(f"ID: {file_id}")
           print(f"Modified: {source.get('modifiedTime')}")
           print(f"Size: {source.get('size', 'unknown')} bytes")
 
           os.makedirs("input", exist_ok=True)
 
-          output_path = "input/source_video.mp4"
+          output_path = Path("input/source_video.mp4")
 
-          request = drive.files().get_media(
-              fileId=source["id"]
-          )
-
-          with io.FileIO(output_path, "wb") as fh:
-              downloader = MediaIoBaseDownload(
-                  fh,
-                  request
+          if not source.get("size"):
+              raise RuntimeError(
+                  "ERROR: Google Drive did not provide the video size."
               )
 
-              done = False
+          total_size = int(source["size"])
 
-              while not done:
-                  status, done = downloader.next_chunk()
+          print(f"Total video size: {total_size} bytes")
 
-                  if status:
-                      progress = int(status.progress() * 100)
-                      print(f"Download progress: {progress}%")
+          session = AuthorizedSession(credentials)
 
-          print("Download completed.")
-          print(f"Saved to: {output_path}")
+          download_url = (
+              "https://www.googleapis.com/drive/v3/files/"
+              + file_id
+              + "?alt=media"
+          )
+
+          chunk_size = 8 * 1024 * 1024
+          position = 0
+
+          if output_path.exists():
+              existing_size = output_path.stat().st_size
+
+              if existing_size < total_size:
+                  position = existing_size
+                  print(
+                      f"Resuming existing download from byte {position}"
+                  )
+              elif existing_size == total_size:
+                  print("Video already fully downloaded.")
+                  position = total_size
+              else:
+                  print("Existing file is larger than expected.")
+                  output_path.unlink()
+
+          if position < total_size:
+
+              with open(output_path, "ab") as output_file:
+
+                  while position < total_size:
+
+                      end = min(
+                          position + chunk_size - 1,
+                          total_size - 1
+                      )
+
+                      headers = {
+                          "Range": f"bytes={position}-{end}"
+                      }
+
+                      success = False
+
+                      for attempt in range(1, 6):
+
+                          try:
+                              print(
+                                  f"Downloading bytes "
+                                  f"{position}-{end} "
+                                  f"(attempt {attempt}/5)"
+                              )
+
+                              response = session.get(
+                                  download_url,
+                                  headers=headers,
+                                  stream=True,
+                                  timeout=(30, 180)
+                              )
+
+                              response.raise_for_status()
+
+                              expected = end - position + 1
+                              received = 0
+
+                              for data in response.iter_content(
+                                  chunk_size=1024 * 1024
+                              ):
+                                  if not data:
+                                      continue
+
+                                  output_file.write(data)
+                                  output_file.flush()
+
+                                  received += len(data)
+
+                              response.close()
+
+                              if received != expected:
+                                  raise RuntimeError(
+                                      f"Incomplete chunk: "
+                                      f"received {received} "
+                                      f"of {expected} bytes"
+                                  )
+
+                              position = end + 1
+
+                              progress = (
+                                  position / total_size
+                              ) * 100
+
+                              print(
+                                  f"Download progress: "
+                                  f"{progress:.1f}%"
+                              )
+
+                              success = True
+                              break
+
+                          except Exception as error:
+
+                              print(
+                                  f"Download attempt failed: {error}"
+                              )
+
+                              if attempt < 5:
+                                  wait_time = attempt * 3
+                                  print(
+                                      f"Retrying in "
+                                      f"{wait_time} seconds..."
+                                  )
+                                  time.sleep(wait_time)
+
+                      if not success:
+                          raise RuntimeError(
+                              "ERROR: Failed to download "
+                              "the current video chunk "
+                              "after 5 attempts."
+                          )
+
+          final_size = output_path.stat().st_size
+
+          if final_size != total_size:
+              raise RuntimeError(
+                  f"ERROR: Download incomplete. "
+                  f"Expected {total_size} bytes, "
+                  f"got {final_size} bytes."
+              )
+
+          print("================================")
+          print("DOWNLOAD COMPLETED SUCCESSFULLY")
+          print(f"File: {output_path}")
+          print(f"Size: {final_size} bytes")
+          print("================================")
           PY
 
       - name: Verify downloaded video
@@ -177,7 +312,9 @@ jobs:
 
           SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-          info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+          info = json.loads(
+              os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+          )
 
           credentials = service_account.Credentials.from_service_account_info(
               info,
@@ -203,39 +340,60 @@ jobs:
           folder_list = folders.get("files", [])
 
           if not folder_list:
-              raise RuntimeError("ERROR: shorts-output folder was not found.")
+              raise RuntimeError(
+                  "ERROR: shorts-output folder was not found."
+              )
 
           output_folder = folder_list[0]
 
-          print(f"Found output folder: {output_folder['name']}")
-          print(f"Folder ID: {output_folder['id']}")
+          print(
+              f"Found output folder: "
+              f"{output_folder['name']}"
+          )
+
+          print(
+              f"Folder ID: "
+              f"{output_folder['id']}"
+          )
 
           output_dir = Path("output")
 
           if not output_dir.exists():
-              raise RuntimeError("ERROR: output directory does not exist.")
+              raise RuntimeError(
+                  "ERROR: output directory does not exist."
+              )
 
           video_files = []
 
           for path in output_dir.iterdir():
-              if path.is_file() and path.suffix.lower() in (
-                  ".mp4",
-                  ".mov",
-                  ".m4v",
-                  ".webm"
+
+              if (
+                  path.is_file()
+                  and path.suffix.lower()
+                  in (".mp4", ".mov", ".m4v", ".webm")
               ):
                   video_files.append(path)
 
           if not video_files:
-              raise RuntimeError("ERROR: No generated video files found in output/.")
+              raise RuntimeError(
+                  "ERROR: No generated video files found in output/."
+              )
 
-          print(f"Found {len(video_files)} generated video(s).")
+          print(
+              f"Found {len(video_files)} generated video(s)."
+          )
 
           for video_path in video_files:
-              print(f"Uploading: {video_path.name}")
+
+              print(
+                  f"Uploading: "
+                  f"{video_path.name}"
+              )
 
               mime_type = (
-                  mimetypes.guess_type(video_path.name)[0]
+                  mimetypes.guess_type(
+                      video_path.name
+                  )[0]
                   or "video/mp4"
               )
 
@@ -256,10 +414,19 @@ jobs:
                   fields="id,name,webViewLink"
               ).execute()
 
-              print(f"Uploaded successfully: {uploaded.get('name')}")
-              print(f"Drive file ID: {uploaded.get('id')}")
+              print(
+                  f"Uploaded successfully: "
+                  f"{uploaded.get('name')}"
+              )
 
-          print("===== GOOGLE DRIVE UPLOAD COMPLETE =====")
+              print(
+                  f"Drive file ID: "
+                  f"{uploaded.get('id')}"
+              )
+
+          print(
+              "===== GOOGLE DRIVE UPLOAD COMPLETE ====="
+          )
           PY
 
       - name: Upload Shorts as GitHub artifact
