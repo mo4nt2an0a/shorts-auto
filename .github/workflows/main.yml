@@ -31,7 +31,6 @@ jobs:
           import time
           from pathlib import Path
 
-          import requests
           from google.oauth2 import service_account
           from google.auth.transport.requests import AuthorizedSession
           from googleapiclient.discovery import build
@@ -92,6 +91,7 @@ jobs:
 
               if mime_type.startswith("video/"):
                   video_files.append(file)
+
               elif name.endswith(
                   (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
               ):
@@ -115,7 +115,8 @@ jobs:
 
           os.makedirs("input", exist_ok=True)
 
-          output_path = Path("input/source_video.mp4")
+          # Standard internal filename for the entire pipeline.
+          output_path = Path("input/MASTER.mp4")
 
           if not source.get("size"):
               raise RuntimeError(
@@ -145,9 +146,11 @@ jobs:
                   print(
                       f"Resuming existing download from byte {position}"
                   )
+
               elif existing_size == total_size:
                   print("Video already fully downloaded.")
                   position = total_size
+
               else:
                   print("Existing file is larger than expected.")
                   output_path.unlink()
@@ -232,10 +235,12 @@ jobs:
 
                               if attempt < 5:
                                   wait_time = attempt * 3
+
                                   print(
                                       f"Retrying in "
                                       f"{wait_time} seconds..."
                                   )
+
                                   time.sleep(wait_time)
 
                       if not success:
@@ -269,7 +274,7 @@ jobs:
           ffprobe -v error \
             -show_entries format=duration,size \
             -of default=noprint_wrappers=1 \
-            input/source_video.mp4
+            input/MASTER.mp4
 
       - name: Test Gemini
         env:
@@ -281,7 +286,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python scripts/analyze_video.py "input/source_video.mp4"
+          python scripts/analyze_video.py "input/MASTER.mp4"
 
       - name: Render Shorts
         run: |
