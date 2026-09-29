@@ -2,7 +2,7 @@ import json
 import os
 import subprocess
 
-VIDEO = "input/VID_20260921_015943_064.mp4"
+VIDEO = "input/MASTER.mp4"
 OUTPUT_DIR = "output"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -41,7 +41,6 @@ for index, clip in enumerate(clips, start=1):
         "-ss", str(start),
         "-i", VIDEO,
         "-t", str(duration),
-
         "-vf",
         (
             "scale=1080:1920:"
