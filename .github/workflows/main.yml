@@ -33,14 +33,12 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaIoBaseDownload
 
-          SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+          SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-          service_account_info = json.loads(
-              os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-          )
+          info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 
           credentials = service_account.Credentials.from_service_account_info(
-              service_account_info,
+              info,
               scopes=SCOPES
           )
 
@@ -51,7 +49,7 @@ jobs:
               cache_discovery=False
           )
 
-          print("Searching for Google Drive folder: shorts-input")
+          print("Searching for shorts-input folder...")
 
           folders = drive.files().list(
               q="name = 'shorts-input' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
@@ -64,18 +62,16 @@ jobs:
 
           if not folder_list:
               raise RuntimeError(
-                  "Google Drive folder 'shorts-input' was not found."
+                  "ERROR: shorts-input folder was not found."
               )
 
-          folder_id = folder_list[0]["id"]
+          input_folder = folder_list[0]
 
-          print(f"Using folder: {folder_list[0]['name']}")
-          print(f"Folder ID: {folder_id}")
-
-          print("Searching for source videos...")
+          print(f"Found folder: {input_folder['name']}")
+          print(f"Folder ID: {input_folder['id']}")
 
           files = drive.files().list(
-              q=f"'{folder_id}' in parents and trashed = false",
+              q=f"'{input_folder['id']}' in parents and trashed = false",
               spaces="drive",
               fields="files(id,name,mimeType,modifiedTime,size)",
               orderBy="modifiedTime desc"
@@ -83,84 +79,6 @@ jobs:
 
           video_files = [
               f for f in files.get("files", [])
-              if f.get("mimeType", "").startswith("video/")
-              or f.get("name", "").lower().endswith(
-                  (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
-              )
-          ]
-
-          if not video_files:
-              raise RuntimeError(
-                  "No video files were found inside shorts-input."
-              )
-
-          source = video_files[0]
-
-          print("Selected source video:")
-          print(f"Name: {source['name']}")
-          print(f"Modified: {source.get('modifiedTime')}")
-          print(f"Size: {source.get('size', 'unknown')} bytes")
-
-          os.makedirs("input", exist_ok=True)
-
-          output_path = "input/VID_20260921_015943_064.mp4"
-
-          request = drive.files().get_media(fileId=source["id"])
-
-          with io.FileIO(output_path, "wb") as fh:
-              downloader = MediaIoBaseDownload(fh, request)
-
-              done = False
-
-              while not done:
-                  status, done = downloader.next_chunk()
-
-                  if status:
-                      print(
-                          f"Download progress: {int(status.progress() * 100)}%"
-                      )
-
-          print("Download completed.")
-          print(f"Saved to: {output_path}")
-          PY
-
-      - name: Verify downloaded source video
-        run: |
-          echo "===== INPUT VIDEO ====="
-          ls -lh input/
-          ffprobe -v error \
-            -show_entries format=duration,size \
-            -of default=noprint_wrappers=1 \
-            input/VID_20260921_015943_064.mp4
-
-      - name: Test Gemini
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python scripts/test_gemini.py
-
-      - name: Analyze source video
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python scripts/analyze_video.py "input/VID_20260921_015943_064.mp4"
-
-      - name: Render Shorts
-        run: |
-          python scripts/render_shorts.py
-
-      - name: Add captions
-        run: |
-          python scripts/add_captions.py
-
-      - name: Show generated Shorts
-        run: |
-          echo "===== GENERATED SHORTS ====="
-          ls -lh output/
-
-      - name: Upload Shorts
-        uses: actions/upload-artifact@v4
-        with:
-          name: generated-shorts
-          path: output/
-          if-no-files-found: error
+              if (
+                  f.get("mimeType", "").startswith("video/")
+                 
