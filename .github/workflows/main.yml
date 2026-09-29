@@ -19,7 +19,119 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install faster-whisper google-genai
+          pip install faster-whisper google-genai google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+
+      - name: Download source video from Google Drive
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import io
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+          service_account_info = json.loads(
+              os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+          )
+
+          credentials = service_account.Credentials.from_service_account_info(
+              service_account_info,
+              scopes=SCOPES
+          )
+
+          drive = build(
+              "drive",
+              "v3",
+              credentials=credentials,
+              cache_discovery=False
+          )
+
+          print("Searching for Google Drive folder: shorts-input")
+
+          folders = drive.files().list(
+              q="name = 'shorts-input' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+              spaces="drive",
+              fields="files(id,name,modifiedTime)",
+              orderBy="modifiedTime desc"
+          ).execute()
+
+          folder_list = folders.get("files", [])
+
+          if not folder_list:
+              raise RuntimeError(
+                  "Google Drive folder 'shorts-input' was not found."
+              )
+
+          folder_id = folder_list[0]["id"]
+
+          print(f"Using folder: {folder_list[0]['name']}")
+          print(f"Folder ID: {folder_id}")
+
+          print("Searching for source videos...")
+
+          files = drive.files().list(
+              q=f"'{folder_id}' in parents and trashed = false",
+              spaces="drive",
+              fields="files(id,name,mimeType,modifiedTime,size)",
+              orderBy="modifiedTime desc"
+          ).execute()
+
+          video_files = [
+              f for f in files.get("files", [])
+              if f.get("mimeType", "").startswith("video/")
+              or f.get("name", "").lower().endswith(
+                  (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
+              )
+          ]
+
+          if not video_files:
+              raise RuntimeError(
+                  "No video files were found inside shorts-input."
+              )
+
+          source = video_files[0]
+
+          print("Selected source video:")
+          print(f"Name: {source['name']}")
+          print(f"Modified: {source.get('modifiedTime')}")
+          print(f"Size: {source.get('size', 'unknown')} bytes")
+
+          os.makedirs("input", exist_ok=True)
+
+          output_path = "input/VID_20260921_015943_064.mp4"
+
+          request = drive.files().get_media(fileId=source["id"])
+
+          with io.FileIO(output_path, "wb") as fh:
+              downloader = MediaIoBaseDownload(fh, request)
+
+              done = False
+
+              while not done:
+                  status, done = downloader.next_chunk()
+
+                  if status:
+                      print(
+                          f"Download progress: {int(status.progress() * 100)}%"
+                      )
+
+          print("Download completed.")
+          print(f"Saved to: {output_path}")
+          PY
+
+      - name: Verify downloaded source video
+        run: |
+          echo "===== INPUT VIDEO ====="
+          ls -lh input/
+          ffprobe -v error \
+            -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 \
+            input/VID_20260921_015943_064.mp4
 
       - name: Test Gemini
         env:
