@@ -1,24 +1,59 @@
+import json
 import os
 import sys
-import json
 import time
+
 from google import genai
+from google.genai import types
 
-API_KEY = os.environ["GEMINI_API_KEY"]
 
-if len(sys.argv) < 2:
-    raise RuntimeError(
-        "Usage: python scripts/analyze_video.py <video_path>"
-    )
+# =========================================================
+# CONFIG
+# =========================================================
 
-VIDEO_PATH = sys.argv[1]
+VIDEO_PATH = sys.argv[1] if len(sys.argv) > 1 else "input/MASTER.mp4"
+OUTPUT_FILE = "clips.json"
+
+MIN_DURATION = 15
+MAX_DURATION = 60
+
+# Maximum number of final candidate clips Gemini should return.
+MAX_CLIPS = 20
+
+POLL_SECONDS = 5
+
+
+# =========================================================
+# CHECKS
+# =========================================================
 
 if not os.path.exists(VIDEO_PATH):
-    raise FileNotFoundError(VIDEO_PATH)
+    raise RuntimeError(f"ERROR: Video not found: {VIDEO_PATH}")
 
-print(f"Uploading video to Gemini Files API: {VIDEO_PATH}")
+api_key = os.environ.get("GEMINI_API_KEY")
 
-client = genai.Client(api_key=API_KEY)
+if not api_key:
+    raise RuntimeError(
+        "ERROR: GEMINI_API_KEY environment variable is missing."
+    )
+
+
+# =========================================================
+# GEMINI CLIENT
+# =========================================================
+
+client = genai.Client(api_key=api_key)
+
+
+# =========================================================
+# UPLOAD VIDEO
+# =========================================================
+
+print("========================================")
+print("GEMINI VIDEO ANALYSIS")
+print("========================================")
+print(f"Video: {VIDEO_PATH}")
+print("Uploading video to Gemini Files API...")
 
 video_file = client.files.upload(
     file=VIDEO_PATH
@@ -27,210 +62,525 @@ video_file = client.files.upload(
 print(f"Uploaded: {video_file.name}")
 print(f"Initial state: {video_file.state}")
 
-while (
-    not video_file.state
-    or video_file.state.name != "ACTIVE"
-):
+
+# =========================================================
+# WAIT FOR VIDEO PROCESSING
+# =========================================================
+
+while video_file.state == "PROCESSING":
+
     print("Gemini is processing the video...")
-
-    if video_file.state:
-        print(f"File state: {video_file.state.name}")
-
-        if video_file.state.name == "FAILED":
-            raise RuntimeError(
-                "Gemini failed to process the uploaded video."
-            )
-
-    time.sleep(5)
+    time.sleep(POLL_SECONDS)
 
     video_file = client.files.get(
         name=video_file.name
     )
 
+    print(f"File state: {video_file.state}")
+
+
+if video_file.state != "ACTIVE":
+    raise RuntimeError(
+        f"ERROR: Gemini video processing failed. "
+        f"Final state: {video_file.state}"
+    )
+
+
 print("Video is ACTIVE and ready for analysis.")
 
-prompt = """
-Analyze the ENTIRE video as a professional short-form video editor.
 
-Your job is to find the strongest COMPLETE moments that can become
+# =========================================================
+# ANALYSIS PROMPT
+# =========================================================
+
+prompt = f"""
+You are an expert short-form video editor.
+
+Analyze the ENTIRE uploaded video from beginning to end.
+
+The goal is to find genuinely strong moments that can become
 standalone YouTube Shorts.
 
-IMPORTANT:
+DO NOT simply select random time ranges.
 
-- Analyze the entire video before selecting clips.
-- Do NOT simply divide the video into equal pieces.
-- Do NOT create clips just to increase the number of clips.
-- Do NOT make many tiny clips from one conversation or one moment.
-- The preferred length is approximately 30-60 seconds.
-- A clip can be shorter than 30 seconds ONLY when it is genuinely
-  complete, self-contained, and especially strong.
-- A clip can be longer than 60 seconds when additional context is
-  necessary to make the moment complete.
-- Never cut someone off in the middle of an important sentence,
-  explanation, story, joke, reaction, or action.
-- Include enough setup before the payoff.
-- Include the complete payoff.
-- Start at a natural point.
-- End at a natural point.
-- Avoid unnecessary silence or dead space.
-- Avoid duplicate or nearly identical clips.
-- Clips must not overlap unless there is an exceptional reason.
-- Do not force a specific number of clips.
-- One excellent clip is better than five weak clips.
-- If only one genuinely strong moment exists, return one clip.
-- If there are no genuinely strong standalone moments, return zero clips.
-- Quality is MUCH more important than quantity.
+DO NOT select clips just because they fit a requested quantity.
 
-Think about each potential clip as if it were going to be published
-as a standalone YouTube Short.
+QUALITY IS MORE IMPORTANT THAN QUANTITY.
 
-A viewer who has never seen the original video should understand the
-moment without needing the rest of the video.
+=========================================================
+CLIP REQUIREMENTS
+=========================================================
 
-For every selected clip provide:
+Every selected clip MUST:
 
-- start: exact start time in seconds
-- end: exact end time in seconds
-- reason: why the COMPLETE moment is valuable
-- hook: short compelling hook/title
+1. Be between {MIN_DURATION} and {MAX_DURATION} seconds long.
+
+2. Be a complete, coherent moment.
+
+3. Have a clear beginning, middle, and ending.
+
+4. Make sense when watched WITHOUT the rest of the original video.
+
+5. Contain enough context for a viewer to understand what is happening.
+
+6. Start at a natural point.
+
+7. End at a natural point.
+
+8. Avoid starting in the middle of a sentence.
+
+9. Avoid ending in the middle of a sentence.
+
+10. Avoid cutting off an important action.
+
+11. Have a strong hook, surprising moment, funny moment,
+    dramatic moment, interesting moment, payoff, reaction,
+    conflict, reveal, or other reason someone would keep watching.
+
+12. Be substantially different from the other selected clips.
+
+13. NOT overlap with another selected clip.
+
+14. NOT be a simple introduction, filler, walking footage,
+    silence, dead air, setup without payoff, or meaningless transition.
+
+15. NOT depend on information that appears many minutes earlier
+    unless the clip itself contains enough context to understand it.
+
+=========================================================
+IMPORTANT TIMING RULES
+=========================================================
+
+Choose timestamps based on the ACTUAL CONTENT of the video.
+
+Do NOT use approximate or invented timestamps.
+
+Watch and reason about the entire video.
+
+Look for strong moments throughout the FULL timeline,
+including the beginning, middle, and end.
+
+Do NOT disproportionately choose clips from the first few minutes.
+
+If an interesting event begins before the best moment,
+include enough preceding context to make the event understandable.
+
+If a moment continues after the apparent payoff,
+include enough of the ending to make the clip feel complete.
+
+Do NOT artificially extend a clip to reach 60 seconds.
+
+A 23-second excellent moment is better than a forced 60-second clip.
+
+A 45-second excellent moment is better than a random 60-second clip.
+
+=========================================================
+QUANTITY
+=========================================================
+
+Find up to {MAX_CLIPS} strong clips.
+
+There is NO requirement to return {MAX_CLIPS} clips.
+
+If only 3 genuinely strong clips exist, return only 3.
+
+If only 1 strong clip exists, return only 1.
+
+NEVER lower the quality threshold just to produce more clips.
+
+=========================================================
+DUPLICATE PREVENTION
+=========================================================
+
+Each clip must represent a different moment.
+
+Do not return multiple clips covering the same event.
+
+Do not return clips that are nearly identical.
+
+Do not return a shorter and longer version of the same moment.
+
+Do not return overlapping timestamps.
+
+=========================================================
+RANKING
+=========================================================
+
+Rank the selected clips by estimated Shorts potential.
+
+Prefer moments with:
+
+- immediate attention
+- strong visual action
+- surprising events
+- funny reactions
+- emotional reactions
+- conflict
+- reveals
+- unusual situations
+- satisfying payoffs
+- clear storytelling
+- strong viewer curiosity
+
+=========================================================
+OUTPUT
+=========================================================
 
 Return ONLY valid JSON.
 
-Do NOT use Markdown.
-Do NOT use ```json.
-Do NOT add any text before or after the JSON.
+No markdown.
 
-Use exactly this format:
+No code fences.
 
-{
+No explanation outside JSON.
+
+Use EXACTLY this structure:
+
+{{
   "clips": [
-    {
-      "start": 12.5,
-      "end": 54.8,
-      "reason": "Complete moment with setup, useful information and payoff.",
-      "hook": "The trick most people don't know"
-    }
+    {{
+      "start": 123.45,
+      "end": 167.80,
+      "reason": "Why this complete moment works as a standalone Short.",
+      "hook": "Short hook describing the moment."
+    }}
   ]
-}
+}}
+
+Rules for JSON:
+
+- "start" must be a number representing seconds.
+- "end" must be a number representing seconds.
+- "end" must be greater than "start".
+- Duration must be between {MIN_DURATION} and {MAX_DURATION} seconds.
+- "reason" must explain why the complete moment is worth watching.
+- "hook" must be short and attention-grabbing.
+- Do not include any other fields.
 """
 
-print("Sending video to Gemini for full-video analysis...")
+
+# =========================================================
+# SEND VIDEO FOR ANALYSIS
+# =========================================================
+
+print("========================================")
+print("Sending video to Gemini for FULL analysis...")
+print("========================================")
 
 response = client.models.generate_content(
-    model="gemini-3.5-flash-lite",
+    model="gemini-2.5-flash",
     contents=[
-        video_file,
-        prompt
-    ]
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    text=prompt
+                ),
+                types.Part(
+                    file_data=types.FileData(
+                        file_uri=video_file.uri,
+                        mime_type=video_file.mime_type
+                    )
+                )
+            ]
+        )
+    ],
+    config=types.GenerateContentConfig(
+        temperature=0.1,
+        response_mime_type="application/json"
+    )
 )
 
-text = response.text.strip()
 
+# =========================================================
+# READ RESPONSE
+# =========================================================
+
+raw_response = response.text.strip()
+
+print()
 print("===== GEMINI RESPONSE =====")
-print(text)
+print(raw_response)
+print("===========================")
+print()
 
-if text.startswith("```"):
-    lines = text.splitlines()
 
-    if lines and lines[0].strip().startswith("```"):
-        lines = lines[1:]
-
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-
-    text = "\n".join(lines).strip()
+# =========================================================
+# PARSE JSON
+# =========================================================
 
 try:
-    parsed = json.loads(text)
+    data = json.loads(raw_response)
 
-except json.JSONDecodeError as e:
-    print("===== RAW RESPONSE =====")
-    print(text)
+except json.JSONDecodeError as error:
+    print("Gemini did not return valid JSON.")
+    print(f"JSON error: {error}")
 
-    raise RuntimeError(
-        f"Gemini did not return valid JSON: {e}"
-    )
+    # Try extracting the JSON object if Gemini accidentally
+    # returned additional text.
+    start_index = raw_response.find("{")
+    end_index = raw_response.rfind("}")
 
-if "clips" not in parsed:
-    raise RuntimeError(
-        "Gemini JSON does not contain a 'clips' field."
-    )
-
-if not isinstance(parsed["clips"], list):
-    raise RuntimeError(
-        "'clips' must be a list."
-    )
-
-validated_clips = []
-
-for index, clip in enumerate(
-    parsed["clips"],
-    start=1
-):
-    required = [
-        "start",
-        "end",
-        "reason",
-        "hook"
-    ]
-
-    for field in required:
-        if field not in clip:
-            raise RuntimeError(
-                f"Clip {index} is missing field: {field}"
-            )
-
-    start = float(clip["start"])
-    end = float(clip["end"])
-
-    if start < 0:
+    if start_index == -1 or end_index == -1:
         raise RuntimeError(
-            f"Clip {index} has negative start time."
+            "ERROR: Could not find a JSON object in Gemini response."
         )
+
+    cleaned = raw_response[start_index:end_index + 1]
+
+    try:
+        data = json.loads(cleaned)
+
+    except json.JSONDecodeError as second_error:
+        raise RuntimeError(
+            "ERROR: Gemini response could not be parsed as JSON."
+        ) from second_error
+
+
+# =========================================================
+# VALIDATE STRUCTURE
+# =========================================================
+
+clips = data.get("clips")
+
+if not isinstance(clips, list):
+    raise RuntimeError(
+        "ERROR: Gemini JSON does not contain a valid 'clips' list."
+    )
+
+
+# =========================================================
+# VALIDATE CLIPS
+# =========================================================
+
+valid_clips = []
+
+for index, clip in enumerate(clips, start=1):
+
+    if not isinstance(clip, dict):
+        print(f"Skipping clip {index}: not an object.")
+        continue
+
+    try:
+        start = float(clip["start"])
+        end = float(clip["end"])
+
+    except (KeyError, TypeError, ValueError):
+        print(
+            f"Skipping clip {index}: invalid start/end."
+        )
+        continue
+
+    reason = str(
+        clip.get("reason", "")
+    ).strip()
+
+    hook = str(
+        clip.get("hook", "")
+    ).strip()
+
+    duration = end - start
+
+    # Basic timing checks.
+    if start < 0:
+        print(
+            f"Skipping clip {index}: negative start."
+        )
+        continue
 
     if end <= start:
-        raise RuntimeError(
-            f"Clip {index} has invalid timestamps."
+        print(
+            f"Skipping clip {index}: invalid duration."
         )
+        continue
 
-    validated_clips.append(
+    if duration < MIN_DURATION:
+        print(
+            f"Skipping clip {index}: "
+            f"{duration:.2f}s is shorter than {MIN_DURATION}s."
+        )
+        continue
+
+    if duration > MAX_DURATION:
+        print(
+            f"Skipping clip {index}: "
+            f"{duration:.2f}s is longer than {MAX_DURATION}s."
+        )
+        continue
+
+    if not reason:
+        print(
+            f"Skipping clip {index}: missing reason."
+        )
+        continue
+
+    if not hook:
+        print(
+            f"Skipping clip {index}: missing hook."
+        )
+        continue
+
+    valid_clips.append(
         {
-            "start": start,
-            "end": end,
-            "reason": str(clip["reason"]),
-            "hook": str(clip["hook"])
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "reason": reason,
+            "hook": hook
         }
     )
 
-parsed["clips"] = validated_clips
+
+# =========================================================
+# SORT BY START TIME
+# =========================================================
+
+valid_clips.sort(
+    key=lambda clip: clip["start"]
+)
+
+
+# =========================================================
+# REMOVE OVERLAPPING CLIPS
+# =========================================================
+
+non_overlapping = []
+
+for clip in valid_clips:
+
+    if not non_overlapping:
+        non_overlapping.append(clip)
+        continue
+
+    previous = non_overlapping[-1]
+
+    if clip["start"] < previous["end"]:
+
+        previous_duration = (
+            previous["end"] -
+            previous["start"]
+        )
+
+        current_duration = (
+            clip["end"] -
+            clip["start"]
+        )
+
+        print(
+            "Overlap detected:"
+        )
+
+        print(
+            f"  Existing: "
+            f"{previous['start']:.2f}s -> "
+            f"{previous['end']:.2f}s "
+            f"({previous_duration:.2f}s)"
+        )
+
+        print(
+            f"  New: "
+            f"{clip['start']:.2f}s -> "
+            f"{clip['end']:.2f}s "
+            f"({current_duration:.2f}s)"
+        )
+
+        # Keep the longer clip.
+        if current_duration > previous_duration:
+            print(
+                "Keeping the new, longer clip."
+            )
+
+            non_overlapping[-1] = clip
+
+        else:
+            print(
+                "Keeping the existing, longer clip."
+            )
+
+    else:
+        non_overlapping.append(clip)
+
+
+valid_clips = non_overlapping
+
+
+# =========================================================
+# LIMIT FINAL NUMBER
+# =========================================================
+
+if len(valid_clips) > MAX_CLIPS:
+    valid_clips = valid_clips[:MAX_CLIPS]
+
+
+# =========================================================
+# FINAL DATA
+# =========================================================
+
+final_data = {
+    "clips": valid_clips
+}
+
+
+# =========================================================
+# SAVE
+# =========================================================
 
 with open(
-    "clips.json",
+    OUTPUT_FILE,
     "w",
     encoding="utf-8"
 ) as f:
+
     json.dump(
-        parsed,
+        final_data,
         f,
         indent=2,
         ensure_ascii=False
     )
 
+
+# =========================================================
+# REPORT
+# =========================================================
+
 print()
-print("===== VIDEO ANALYSIS COMPLETE =====")
-print(f"Clips found: {len(validated_clips)}")
-print("Saved to clips.json")
+print("========================================")
+print("VIDEO ANALYSIS COMPLETE")
+print("========================================")
+print(f"Clips found by Gemini: {len(clips)}")
+print(f"Valid clips saved:     {len(valid_clips)}")
+print(f"Saved to:              {OUTPUT_FILE}")
+print("========================================")
 
-for index, clip in enumerate(
-    validated_clips,
-    start=1
-):
-    duration = clip["end"] - clip["start"]
+if valid_clips:
 
+    for index, clip in enumerate(
+        valid_clips,
+        start=1
+    ):
+
+        duration = (
+            clip["end"] -
+            clip["start"]
+        )
+
+        print(
+            f"Clip {index}: "
+            f"{clip['start']:.2f}s -> "
+            f"{clip['end']:.2f}s "
+            f"({duration:.2f}s)"
+        )
+
+        print(
+            f"Hook: {clip['hook']}"
+        )
+
+else:
+
+    print()
     print(
-        f"Clip {index}: "
-        f"{clip['start']:.2f}s -> "
-        f"{clip['end']:.2f}s "
-        f"({duration:.2f}s)"
+        "WARNING: Gemini did not find any "
+        "valid 15-60 second clips."
     )
-    print(f"Hook: {clip['hook']}")
+    print(
+        "No low-quality clips will be created."
+    )
