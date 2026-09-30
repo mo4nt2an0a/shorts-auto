@@ -292,6 +292,10 @@ jobs:
         run: |
           python scripts/render_shorts.py
 
+      - name: Smart face reframe
+        run: |
+          python scripts/smart_reframe.py
+
       - name: Add captions
         run: |
           python scripts/add_captions.py
