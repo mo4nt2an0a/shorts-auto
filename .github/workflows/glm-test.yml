@@ -8,9 +8,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ============================================================
+      # GOOGLE DRIVE → input/MASTER.mp4
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -20,9 +23,208 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
-      - name: Check input video
+      - name: Download latest video from Google Drive
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python - <<'PY'
+          import os
+          import io
+          import json
+          import sys
+          import time
+
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          DRIVE_FOLDER_NAME = "shorts-input"
+          OUTPUT_PATH = "input/MASTER.mp4"
+
+          os.makedirs("input", exist_ok=True)
+
+          raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+          if not raw:
+              print("ERROR: GOOGLE_SERVICE_ACCOUNT_JSON secret is missing.")
+              sys.exit(1)
+
+          try:
+              service_account_info = json.loads(raw)
+          except json.JSONDecodeError as e:
+              print(f"ERROR: Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+              sys.exit(1)
+
+          scopes = [
+              "https://www.googleapis.com/auth/drive.readonly"
+          ]
+
+          credentials = service_account.Credentials.from_service_account_info(
+              service_account_info,
+              scopes=scopes
+          )
+
+          drive = build(
+              "drive",
+              "v3",
+              credentials=credentials,
+              cache_discovery=False
+          )
+
+          print("Finding Google Drive folder...")
+
+          folder_query = (
+              "name = '" + DRIVE_FOLDER_NAME + "' "
+              "and mimeType = 'application/vnd.google-apps.folder' "
+              "and trashed = false"
+          )
+
+          folders = drive.files().list(
+              q=folder_query,
+              spaces="drive",
+              fields="files(id,name)",
+              pageSize=10
+          ).execute().get("files", [])
+
+          if not folders:
+              print(f"ERROR: Google Drive folder '{DRIVE_FOLDER_NAME}' not found.")
+              sys.exit(1)
+
+          folder_id = folders[0]["id"]
+
+          print(f"Found folder: {DRIVE_FOLDER_NAME}")
+          print(f"Folder ID: {folder_id}")
+
+          print("Finding videos inside the folder...")
+
+          query = (
+              "'" + folder_id + "' in parents "
+              "and trashed = false "
+              "and mimeType != 'application/vnd.google-apps.folder'"
+          )
+
+          response = drive.files().list(
+              q=query,
+              spaces="drive",
+              fields="files(id,name,mimeType,size,modifiedTime,createdTime)",
+              orderBy="createdTime desc",
+              pageSize=100
+          ).execute()
+
+          files = response.get("files", [])
+
+          if not files:
+              print("ERROR: No files found in Google Drive folder.")
+              sys.exit(1)
+
+          # Prefer actual video files.
+          video_files = [
+              f for f in files
+              if (
+                  f.get("mimeType", "").startswith("video/")
+                  or f.get("name", "").lower().endswith(
+                      (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+                  )
+              )
+          ]
+
+          if not video_files:
+              print("ERROR: No video files found in Google Drive folder.")
+              print("Files found:")
+              for f in files:
+                  print(
+                      f"- {f.get('name')} "
+                      f"({f.get('mimeType')})"
+                  )
+              sys.exit(1)
+
+          source = video_files[0]
+
+          file_id = source["id"]
+          file_name = source["name"]
+
+          print(f"Selected video: {file_name}")
+          print(f"File ID: {file_id}")
+          print(f"Size: {source.get('size', 'unknown')} bytes")
+          print(f"Modified: {source.get('modifiedTime', 'unknown')}")
+          print(f"Created: {source.get('createdTime', 'unknown')}")
+
+          print("Starting download...")
+
+          request = drive.files().get(
+              fileId=file_id,
+              alt="media"
+          )
+
+          temp_path = OUTPUT_PATH + ".part"
+
+          # Remove stale partial download if one exists.
+          if os.path.exists(temp_path):
+              os.remove(temp_path)
+
+          with open(temp_path, "wb") as fh:
+              downloader = MediaIoBaseDownload(
+                  fh,
+                  request,
+                  chunksize=8 * 1024 * 1024
+              )
+
+              done = False
+              retry_count = 0
+              max_retries = 5
+
+              while not done:
+                  try:
+                      status, done = downloader.next_chunk()
+
+                      if status:
+                          print(
+                              f"Download progress: "
+                              f"{int(status.progress() * 100)}%"
+                          )
+
+                      retry_count = 0
+
+                  except Exception as e:
+                      retry_count += 1
+
+                      if retry_count > max_retries:
+                          print(
+                              f"ERROR: Download failed after "
+                              f"{max_retries} retries: {e}"
+                          )
+                          sys.exit(1)
+
+                      print(
+                          f"Download error: {e}"
+                      )
+                      print(
+                          f"Retrying "
+                          f"({retry_count}/{max_retries})..."
+                      )
+
+                      time.sleep(5 * retry_count)
+
+          os.replace(temp_path, OUTPUT_PATH)
+
+          file_size = os.path.getsize(OUTPUT_PATH)
+
+          if file_size == 0:
+              print("ERROR: Downloaded file is empty.")
+              sys.exit(1)
+
+          print("")
+          print("========================================")
+          print("Google Drive download complete")
+          print("========================================")
+          print(f"Source: {file_name}")
+          print(f"Output: {OUTPUT_PATH}")
+          print(f"Size: {file_size} bytes")
+          print("========================================")
+          PY
+
+      - name: Verify input video
         run: |
           echo "Checking input video..."
 
@@ -31,15 +233,33 @@ jobs:
             exit 1
           fi
 
-          ls -lh input/MASTER.mp4
+          SIZE=$(stat -c%s "input/MASTER.mp4")
 
-      - name: Run GLM 5.3 Flash analysis
+          if [ "$SIZE" -le 0 ]; then
+            echo "ERROR: input/MASTER.mp4 is empty."
+            exit 1
+          fi
+
+          echo "MASTER.mp4 found."
+          echo "Size: $SIZE bytes"
+
+          file "input/MASTER.mp4"
+
+      # ============================================================
+      # GLM VIDEO ANALYSIS
+      # ============================================================
+
+      - name: Run GLM video analysis
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           python scripts/analyze_video_glm.py input/MASTER.mp4
 
-      - name: Show GLM result
+      # ============================================================
+      # SHOW RESULT
+      # ============================================================
+
+      - name: Show GLM results
         if: always()
         run: |
           echo "========================================"
@@ -52,10 +272,16 @@ jobs:
             echo "clips_glm.json was not created."
           fi
 
-      - name: Upload GLM result
+      # ============================================================
+      # SAVE RESULT AS ARTIFACT
+      # ============================================================
+
+      - name: Upload GLM results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: glm-test-result
-          path: clips_glm.json
-          if-no-files-found: ignore
+          name: glm-results
+          path: |
+            clips_glm.json
+          if-no-files-found: warn
+          retention-days: 7
