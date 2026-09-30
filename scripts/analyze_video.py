@@ -14,13 +14,12 @@ from google.genai import types
 VIDEO_PATH = sys.argv[1] if len(sys.argv) > 1 else "input/MASTER.mp4"
 OUTPUT_FILE = "clips.json"
 
-MIN_DURATION = 15
+MIN_DURATION = 30
 MAX_DURATION = 60
-
-# Maximum number of final candidate clips Gemini should return.
 MAX_CLIPS = 20
-
 POLL_SECONDS = 5
+
+MODEL = "gemini-3.8-flash"
 
 
 # =========================================================
@@ -53,6 +52,7 @@ print("========================================")
 print("GEMINI VIDEO ANALYSIS")
 print("========================================")
 print(f"Video: {VIDEO_PATH}")
+print(f"Model: {MODEL}")
 print("Uploading video to Gemini Files API...")
 
 video_file = client.files.upload(
@@ -103,7 +103,8 @@ standalone YouTube Shorts.
 
 DO NOT simply select random time ranges.
 
-DO NOT select clips just because they fit a requested quantity.
+DO NOT select clips just because you need to produce a certain
+number of clips.
 
 QUALITY IS MORE IMPORTANT THAN QUANTITY.
 
@@ -137,76 +138,112 @@ Every selected clip MUST:
     dramatic moment, interesting moment, payoff, reaction,
     conflict, reveal, or other reason someone would keep watching.
 
-12. Be substantially different from the other selected clips.
+12. Be substantially different from every other selected clip.
 
 13. NOT overlap with another selected clip.
 
 14. NOT be a simple introduction, filler, walking footage,
     silence, dead air, setup without payoff, or meaningless transition.
 
-15. NOT depend on information that appears many minutes earlier
+15. NOT depend on information that appeared many minutes earlier
     unless the clip itself contains enough context to understand it.
 
 =========================================================
-IMPORTANT TIMING RULES
+FULL VIDEO COVERAGE
 =========================================================
 
-Choose timestamps based on the ACTUAL CONTENT of the video.
+Analyze the ENTIRE video timeline.
 
-Do NOT use approximate or invented timestamps.
+Do not focus only on the beginning.
 
-Watch and reason about the entire video.
+Search for strong moments in:
 
-Look for strong moments throughout the FULL timeline,
-including the beginning, middle, and end.
+- the opening
+- early sections
+- middle sections
+- later sections
+- the ending
 
-Do NOT disproportionately choose clips from the first few minutes.
+A 30+ minute video may contain many separate events.
 
-If an interesting event begins before the best moment,
-include enough preceding context to make the event understandable.
+Make a deliberate effort to find the strongest moments throughout
+the complete timeline.
 
-If a moment continues after the apparent payoff,
-include enough of the ending to make the clip feel complete.
+=========================================================
+TIMESTAMP ACCURACY
+=========================================================
 
-Do NOT artificially extend a clip to reach 60 seconds.
+Use timestamps based on the ACTUAL CONTENT of the uploaded video.
 
-A 23-second excellent moment is better than a forced 60-second clip.
+Do NOT invent timestamps.
 
-A 45-second excellent moment is better than a random 60-second clip.
+Do NOT guess.
+
+Do NOT use arbitrary 15, 30, 45, or 60 second windows.
+
+The start timestamp should be close to the natural beginning
+of the interesting event.
+
+The end timestamp should include the natural payoff or conclusion.
+
+If a person begins explaining something important immediately before
+the main event, include enough of that explanation to provide context.
+
+If the important reaction happens immediately after the main event,
+include that reaction.
+
+=========================================================
+CLIP LENGTH
+=========================================================
+
+Do NOT artificially extend clips.
+
+A 17-second excellent moment is acceptable.
+
+A 25-second excellent moment is acceptable.
+
+A 42-second excellent moment is acceptable.
+
+A 58-second excellent moment is acceptable.
+
+Do not add boring material merely to approach 60 seconds.
 
 =========================================================
 QUANTITY
 =========================================================
 
-Find up to {MAX_CLIPS} strong clips.
+Find up to {MAX_CLIPS} genuinely strong clips.
 
-There is NO requirement to return {MAX_CLIPS} clips.
+There is NO requirement to return {MAX_CLIPS}.
 
-If only 3 genuinely strong clips exist, return only 3.
+If only 5 excellent clips exist, return 5.
 
-If only 1 strong clip exists, return only 1.
+If only 2 excellent clips exist, return 2.
 
-NEVER lower the quality threshold just to produce more clips.
+If only 1 excellent clip exists, return 1.
+
+If no strong clips exist, return an empty list.
+
+NEVER lower the quality threshold to increase quantity.
 
 =========================================================
-DUPLICATE PREVENTION
+DUPLICATES
 =========================================================
 
 Each clip must represent a different moment.
 
-Do not return multiple clips covering the same event.
+Do not return:
 
-Do not return clips that are nearly identical.
-
-Do not return a shorter and longer version of the same moment.
-
-Do not return overlapping timestamps.
+- overlapping clips
+- multiple versions of the same event
+- a short and long version of the same event
+- clips with essentially identical content
 
 =========================================================
 RANKING
 =========================================================
 
-Rank the selected clips by estimated Shorts potential.
+Rank clips by Shorts potential.
 
 Prefer moments with:
 
@@ -223,7 +260,7 @@ Prefer moments with:
 - strong viewer curiosity
 
 =========================================================
-OUTPUT
+OUTPUT FORMAT
 =========================================================
 
 Return ONLY valid JSON.
@@ -247,14 +284,14 @@ Use EXACTLY this structure:
   ]
 }}
 
-Rules for JSON:
+Rules:
 
-- "start" must be a number representing seconds.
-- "end" must be a number representing seconds.
-- "end" must be greater than "start".
-- Duration must be between {MIN_DURATION} and {MAX_DURATION} seconds.
-- "reason" must explain why the complete moment is worth watching.
-- "hook" must be short and attention-grabbing.
+- start must be a number representing seconds.
+- end must be a number representing seconds.
+- end must be greater than start.
+- duration must be between {MIN_DURATION} and {MAX_DURATION} seconds.
+- reason must explain why the complete moment is worth watching.
+- hook must be short and attention-grabbing.
 - Do not include any other fields.
 """
 
@@ -268,7 +305,7 @@ print("Sending video to Gemini for FULL analysis...")
 print("========================================")
 
 response = client.models.generate_content(
-    model="gemini-2.5-flash",
+    model=MODEL,
     contents=[
         types.Content(
             role="user",
@@ -313,11 +350,10 @@ try:
     data = json.loads(raw_response)
 
 except json.JSONDecodeError as error:
+
     print("Gemini did not return valid JSON.")
     print(f"JSON error: {error}")
 
-    # Try extracting the JSON object if Gemini accidentally
-    # returned additional text.
     start_index = raw_response.find("{")
     end_index = raw_response.rfind("}")
 
@@ -381,7 +417,6 @@ for index, clip in enumerate(clips, start=1):
 
     duration = end - start
 
-    # Basic timing checks.
     if start < 0:
         print(
             f"Skipping clip {index}: negative start."
@@ -465,17 +500,13 @@ for clip in valid_clips:
             clip["start"]
         )
 
-        print(
-            "Overlap detected:"
-        )
-
+        print("Overlap detected:")
         print(
             f"  Existing: "
             f"{previous['start']:.2f}s -> "
             f"{previous['end']:.2f}s "
             f"({previous_duration:.2f}s)"
         )
-
         print(
             f"  New: "
             f"{clip['start']:.2f}s -> "
@@ -483,18 +514,11 @@ for clip in valid_clips:
             f"({current_duration:.2f}s)"
         )
 
-        # Keep the longer clip.
         if current_duration > previous_duration:
-            print(
-                "Keeping the new, longer clip."
-            )
-
+            print("Keeping the new, longer clip.")
             non_overlapping[-1] = clip
-
         else:
-            print(
-                "Keeping the existing, longer clip."
-            )
+            print("Keeping the existing, longer clip.")
 
     else:
         non_overlapping.append(clip)
@@ -512,17 +536,12 @@ if len(valid_clips) > MAX_CLIPS:
 
 
 # =========================================================
-# FINAL DATA
+# SAVE
 # =========================================================
 
 final_data = {
     "clips": valid_clips
 }
-
-
-# =========================================================
-# SAVE
-# =========================================================
 
 with open(
     OUTPUT_FILE,
@@ -546,9 +565,9 @@ print()
 print("========================================")
 print("VIDEO ANALYSIS COMPLETE")
 print("========================================")
-print(f"Clips found by Gemini: {len(clips)}")
-print(f"Valid clips saved:     {len(valid_clips)}")
-print(f"Saved to:              {OUTPUT_FILE}")
+print(f"Clips returned by Gemini: {len(clips)}")
+print(f"Valid clips saved:        {len(valid_clips)}")
+print(f"Saved to:                 {OUTPUT_FILE}")
 print("========================================")
 
 if valid_clips:
