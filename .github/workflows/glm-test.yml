@@ -1,0 +1,61 @@
+name: GLM Video Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  glm-test:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Check input video
+        run: |
+          echo "Checking input video..."
+
+          if [ ! -f "input/MASTER.mp4" ]; then
+            echo "ERROR: input/MASTER.mp4 was not found."
+            exit 1
+          fi
+
+          ls -lh input/MASTER.mp4
+
+      - name: Run GLM 5.3 Flash analysis
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python scripts/analyze_video_glm.py input/MASTER.mp4
+
+      - name: Show GLM result
+        if: always()
+        run: |
+          echo "========================================"
+          echo "GLM RESULT"
+          echo "========================================"
+
+          if [ -f "clips_glm.json" ]; then
+            cat clips_glm.json
+          else
+            echo "clips_glm.json was not created."
+          fi
+
+      - name: Upload GLM result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glm-test-result
+          path: clips_glm.json
+          if-no-files-found: ignore
