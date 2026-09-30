@@ -1,15 +1,10 @@
 import json
 import os
 import sys
-import time
 import requests
 
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-MODEL = "nvidia/nemotron-3-nano-30b-a3b-omni:free"
+MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 
 MIN_DURATION = 30
 MAX_DURATION = 60
@@ -21,10 +16,6 @@ UGUU_URL = "https://uguu.se/upload"
 VIDEO_PATH = sys.argv[1] if len(sys.argv) > 1 else "input/MASTER.mp4"
 OUTPUT_PATH = "clips_nvidia.json"
 
-
-# ============================================================
-# HELPERS
-# ============================================================
 
 def fail(message):
     print("")
@@ -86,7 +77,6 @@ def upload_video(video_path):
 def extract_json(text):
     text = text.strip()
 
-    # Remove markdown fences if model used them.
     if text.startswith("```"):
         lines = text.splitlines()
 
@@ -101,33 +91,26 @@ def extract_json(text):
         if text.lower().startswith("json"):
             text = text[4:].strip()
 
-    # Direct JSON.
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    # Try extracting first JSON object.
     start = text.find("{")
     end = text.rfind("}")
 
     if start != -1 and end != -1 and end > start:
-        candidate = text[start:end + 1]
-
         try:
-            return json.loads(candidate)
+            return json.loads(text[start:end + 1])
         except Exception:
             pass
 
-    # Try extracting JSON array.
     start = text.find("[")
     end = text.rfind("]")
 
     if start != -1 and end != -1 and end > start:
-        candidate = text[start:end + 1]
-
         try:
-            return json.loads(candidate)
+            return json.loads(text[start:end + 1])
         except Exception:
             pass
 
@@ -143,7 +126,6 @@ def timestamp_to_seconds(value):
 
     value = value.strip()
 
-    # Plain number.
     try:
         return float(value)
     except Exception:
@@ -153,15 +135,17 @@ def timestamp_to_seconds(value):
 
     try:
         if len(parts) == 2:
-            minutes = float(parts[0])
-            seconds = float(parts[1])
-            return minutes * 60 + seconds
+            return (
+                float(parts[0]) * 60
+                + float(parts[1])
+            )
 
         if len(parts) == 3:
-            hours = float(parts[0])
-            minutes = float(parts[1])
-            seconds = float(parts[2])
-            return hours * 3600 + minutes * 60 + seconds
+            return (
+                float(parts[0]) * 3600
+                + float(parts[1]) * 60
+                + float(parts[2])
+            )
     except Exception:
         return None
 
@@ -171,10 +155,8 @@ def timestamp_to_seconds(value):
 def normalize_clips(data):
     if isinstance(data, dict):
         clips = data.get("clips", [])
-
     elif isinstance(data, list):
         clips = data
-
     else:
         clips = []
 
@@ -199,24 +181,18 @@ def normalize_clips(data):
         if start is None or end is None:
             continue
 
-        try:
-            start = float(start)
-            end = float(end)
-        except Exception:
-            continue
-
         duration = end - start
-
-        if duration < MIN_DURATION:
-            continue
-
-        if duration > MAX_DURATION:
-            continue
 
         if start < 0:
             continue
 
         if end <= start:
+            continue
+
+        if duration < MIN_DURATION:
+            continue
+
+        if duration > MAX_DURATION:
             continue
 
         title = (
@@ -232,7 +208,10 @@ def normalize_clips(data):
             or ""
         )
 
-        score = clip.get("score", clip.get("quality_score", 0))
+        score = clip.get(
+            "score",
+            clip.get("quality_score", 0)
+        )
 
         try:
             score = float(score)
@@ -246,7 +225,7 @@ def normalize_clips(data):
                 "duration": round(duration, 2),
                 "title": str(title).strip(),
                 "description": str(description).strip(),
-                "score": score,
+                "score": score
             }
         )
 
@@ -299,10 +278,6 @@ def remove_overlaps(clips):
     )
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 if not os.path.isfile(VIDEO_PATH):
     fail(f"Video not found: {VIDEO_PATH}")
 
@@ -327,80 +302,74 @@ if not api_key:
     fail("OPENROUTER_API_KEY secret is missing.")
 
 
-# ============================================================
-# UPLOAD VIDEO
-# ============================================================
-
 video_url = upload_video(VIDEO_PATH)
 
-
-# ============================================================
-# PROMPT
-# ============================================================
 
 prompt = f"""
 You are an expert short-form video editor.
 
 Analyze the ENTIRE supplied video.
 
-Your task is NOT to divide the video into arbitrary sections.
-
-Find only genuinely strong moments that can work as standalone
-YouTube Shorts / Reels / short-form videos.
+Find ONLY genuinely strong moments that can work as standalone
+YouTube Shorts, Reels, or other short-form videos.
 
 QUALITY IS MORE IMPORTANT THAN QUANTITY.
 
 Rules:
 
-1. Analyze the whole video before selecting clips.
+1. Analyze the entire video before selecting clips.
 
-2. Select ONLY moments that are genuinely interesting, funny,
-   surprising, emotional, educational, dramatic, impressive,
-   controversial, or otherwise highly engaging.
+2. Do NOT divide the video into arbitrary sections.
 
-3. Every selected clip must make sense by itself.
+3. Do NOT create clips just to fill a quota.
 
-4. The viewer should understand what is happening without needing
-   a previous clip.
+4. Select only genuinely interesting moments:
+   funny, surprising, emotional, dramatic, educational,
+   impressive, unexpected, controversial, or highly engaging.
 
-5. Do NOT select filler.
+5. Every clip must make sense by itself.
 
-6. Do NOT select introductions unless the introduction itself is
-   highly engaging.
+6. Include enough setup for the payoff.
 
-7. Do NOT select outros, dead air, greetings, pauses, loading,
-   setup, repeated explanations, or irrelevant conversation.
+7. End naturally after the payoff.
 
-8. Do NOT create arbitrary 30-60 second windows just to satisfy
-   the duration requirement.
+8. Do NOT include filler.
 
-9. Do NOT create multiple clips from the same moment.
+9. Do NOT include dead air.
 
-10. Avoid overlapping clips.
+10. Do NOT include irrelevant conversation.
 
-11. If the same event contains several possible moments, select
-    only the strongest self-contained version.
+11. Do NOT include greetings or introductions unless they are
+    genuinely interesting.
 
-12. Prefer natural beginning and ending points.
+12. Do NOT include outros.
 
-13. A clip may be shorter than 60 seconds, but it must be at least
-    {MIN_DURATION} seconds.
+13. Do NOT create multiple clips from the same moment.
 
-14. Maximum duration is {MAX_DURATION} seconds.
+14. Do NOT create overlapping clips.
 
-15. If the video contains only 2 genuinely strong moments,
-    return 2 clips.
+15. If several possible clips come from the same event,
+    select only the strongest standalone version.
 
-16. If it contains only 1 genuinely strong moment, return 1 clip.
+16. Minimum duration: {MIN_DURATION} seconds.
 
-17. If there are no genuinely strong moments, return an empty list.
+17. Maximum duration: {MAX_DURATION} seconds.
 
-18. NEVER invent events, dialogue, timestamps, or information.
+18. If only 3 strong clips exist, return 3.
 
-19. Timestamp accuracy is extremely important.
+19. If only 1 strong clip exists, return 1.
 
-20. The clip should contain the complete setup and payoff whenever
-    necessary.
+20. If there are no strong clips, return an empty list.
+
+21. NEVER invent dialogue, events, facts, or timestamps.
+
+22. Timestamp accuracy is extremely important.
+
+23. Score each clip from 1 to 10.
+
+24. Only return genuinely strong clips.
+
+QUALITY > QUANTITY.
 
 Return ONLY valid JSON.
 
@@ -418,19 +387,13 @@ Required format:
   ]
 }}
 
-Score each candidate from 1 to 10 based on short-form potential.
+If there are no suitable clips:
 
-Only return clips with a genuinely strong score.
-
-Remember:
-QUALITY > QUANTITY.
-Do not manufacture clips.
+{{
+  "clips": []
+}}
 """
 
-
-# ============================================================
-# OPENROUTER REQUEST
-# ============================================================
 
 print("")
 print("=" * 60)
@@ -454,18 +417,18 @@ payload = {
             "content": [
                 {
                     "type": "text",
-                    "text": prompt,
+                    "text": prompt
                 },
                 {
                     "type": "video_url",
                     "video_url": {
                         "url": video_url
-                    },
-                },
-            ],
+                    }
+                }
+            ]
         }
     ],
-    "temperature": 0.2,
+    "temperature": 0.2
 }
 
 
@@ -488,32 +451,45 @@ if response.status_code != 200:
     print("===== OPENROUTER ERROR =====")
 
     try:
-        print(json.dumps(response.json(), indent=2))
+        print(
+            json.dumps(
+                response.json(),
+                indent=2
+            )
+        )
     except Exception:
         print(response.text[:5000])
 
     print("============================")
 
     fail(
-        f"ERROR: OpenRouter returned HTTP {response.status_code}"
+        f"ERROR: OpenRouter returned HTTP "
+        f"{response.status_code}"
     )
 
-
-# ============================================================
-# PARSE RESPONSE
-# ============================================================
 
 try:
     response_data = response.json()
 except Exception as e:
-    fail(f"OpenRouter returned invalid JSON: {e}")
+    fail(
+        f"OpenRouter returned invalid JSON: {e}"
+    )
 
 
 try:
     message = response_data["choices"][0]["message"]
 except Exception:
-    print(json.dumps(response_data, indent=2))
-    fail("Could not find model message in OpenRouter response.")
+    print(
+        json.dumps(
+            response_data,
+            indent=2
+        )
+    )
+
+    fail(
+        "Could not find model message in "
+        "OpenRouter response."
+    )
 
 
 content = message.get("content", "")
@@ -546,32 +522,33 @@ if not content:
 data = extract_json(content)
 
 if data is None:
-    fail("Could not parse valid JSON from model response.")
+    fail(
+        "Could not parse valid JSON from "
+        "model response."
+    )
 
-
-# ============================================================
-# VALIDATE CLIPS
-# ============================================================
 
 clips = normalize_clips(data)
 
 print("")
-print(f"Valid clips before overlap filtering: {len(clips)}")
+print(
+    f"Valid clips before overlap filtering: "
+    f"{len(clips)}"
+)
 
 clips = remove_overlaps(clips)
 
-print(f"Valid clips after overlap filtering: {len(clips)}")
+print(
+    f"Valid clips after overlap filtering: "
+    f"{len(clips)}"
+)
 
-
-# ============================================================
-# SAVE RESULT
-# ============================================================
 
 output = {
     "model": MODEL,
     "video": VIDEO_PATH,
     "video_size_bytes": file_size,
-    "clips": clips,
+    "clips": clips
 }
 
 
@@ -604,4 +581,5 @@ for index, clip in enumerate(clips, 1):
         f"({clip['duration']:.2f}s) | "
         f"score={clip['score']}"
     )
+
     print(f"   {clip['title']}")
